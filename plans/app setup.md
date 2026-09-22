@@ -1,6 +1,7 @@
 # App setup — GitHub ⇄ OPFS sync app
 
-Status: **agreed plan, not yet implemented.**
+Status: **implemented.** The automated checks below pass; the items marked
+*needs a real repo* have not been run against live GitHub yet.
 
 ## Goal
 
@@ -31,6 +32,9 @@ returns to this app to push.
 | Conflicts | Detected per file, block the push, resolved by an explicit choice |
 | Wipe protection | Push is previewed every time and blocked on suspicious deletion patterns |
 | First pull into a non-empty workspace | Prompt once: *Replace* (recommended) or *Adopt* |
+| Scope of the mirror | The whole repo, `.gypsum/` included — no extension allowlist |
+| Transient Gypsum files | Ignored by pattern, so half-written saves never reach the repo |
+| `.gypsum/mtime.json` | Synced, but never written by this app |
 
 ## Why not `browser-git-ops`
 
@@ -107,6 +111,81 @@ Deletions fall out of this naturally, as the cases where `L` or `R` is `null`.
 
 Either way the file returns to a consistent state. Conflicts are file-level, not
 line-level; there is no text merge.
+
+## Companion app: Gypsum
+
+The editor on this origin is [gypsum](https://github.com/aewshopping/gypsum) — a
+browser notes app over `.txt`/`.md` files. It can run against a picked local
+folder or against OPFS; only the OPFS mode concerns this app. Verified against
+its source, the facts that constrain this design:
+
+- **It owns `.gypsum/` at the OPFS root**, holding `history.gypsum`,
+  `table_layouts.gypsum`, `mtime.json`, and transient `*-save.gypsum` /
+  `*-autosave.gypsum` / `*-temp.gypsum` written and removed around each save,
+  plus durable `*-trash.gypsum` copies of deleted notes.
+- **`.gypsum/` is synced deliberately**, so edit history and table layouts are
+  versioned alongside the notes. This app reads it like any other directory and
+  **never writes into it** — `mtime.json` in particular is Gypsum's to maintain.
+- **Only `.txt` and `.md` are visible to Gypsum.** Its loader and its tar backup
+  both collect those two extensions plus everything under `.gypsum/`, and both
+  skip dot-directories otherwise.
+- **Its tar import/export is a separate workflow from this app**, not a
+  complementary one: both are routes for getting files into OPFS, and a given
+  setup uses one or the other. In a git-synced setup **git is the backup
+  mechanism**, which is why `.gypsum/` is synced — the edit history and table
+  layouts have no other route off the machine.
+- **OPFS here is evictable.** Gypsum never calls `navigator.storage.persist()`,
+  and notes in its own source that the browser may clear the storage under disk
+  pressure. Nothing in either app has to misbehave for the workspace to vanish.
+  This, rather than any app action, is the primary justification for guards 1
+  and 2.
+- **`clearOPFS()` removes every root entry recursively, dot-directories
+  included**, so a tar import that hits its overwrite path deletes `.gitsync/`
+  too. That is the safe outcome: guard 1 sees no merge base and re-clones.
+- **`hasOPFSContent()` ignores dot-directories and counts only `.txt`/`.md`
+  files**, so an OPFS holding just `.gitsync/` and non-note files imports with
+  *no* overwrite warning and *no* `clearOPFS()`, leaving `index.json` intact
+  while the file set changes beneath it. Not an expected workflow, but it is the
+  shape guard 2 catches, and eviction can produce the same shape unaided.
+- Gypsum notes that concurrent `getDirectoryHandle()` and `values()` on the same
+  OPFS directory **deadlock in Chromium**. Collect entry names first, then act.
+
+### Ignored patterns
+
+`config.js` carries an `IGNORE_PATTERNS` list, applied in both directions:
+
+```
+.gitsync/**              this app's own state
+**/*-save.gypsum         mid-save artifacts, removed once the write verifies
+**/*-autosave.gypsum
+**/*-temp.gypsum
+```
+
+Without these, an autosave landing between a scan and a push would commit a
+half-written recovery file and then commit its deletion moments later, churning
+the history for no gain. `history.gypsum`, `table_layouts.gypsum`, `mtime.json`
+and `*-trash.gypsum` are durable and do sync.
+
+### Requesting persistent storage
+
+On connect, the app calls `navigator.storage.persist()` once. The two apps share
+one origin and therefore one storage bucket, so a granted request protects
+Gypsum's notes as much as this app's sync state. Browsers differ on how they
+answer — Chromium decides silently on engagement heuristics, Firefox may prompt —
+so the result is logged and never blocks anything. A refusal changes nothing
+about how the app behaves; the guards already assume the workspace can vanish.
+
+### If the two import paths do meet
+
+Not an expected combination, but worth knowing the failure is benign. Gypsum's
+tar backup carries only `.txt`/`.md` and `.gypsum/`, so if the repo holds
+anything else — a `LICENSE`, a `.github/` folder, images — a backup and
+re-import removes it from OPFS, and this app reads that as a deletion and offers
+to push it. The push preview shows exactly that, and declining costs nothing: a
+pull restores the files, because the deletion was never committed.
+
+Because `history.gypsum` is mutated by every edit, syncing from two machines will
+conflict on it routinely. Single-machine use has no such problem.
 
 ## First pull into a non-empty workspace
 
@@ -193,14 +272,15 @@ tedious to unpick, and these guards mean it cannot happen by accident.
 
 ## Behaviour
 
-**Connect** — read repo URL + token from the inputs (prefilled from
+**Connect** — request persistent storage (once, non-blocking), then read repo
+URL + token from the inputs (prefilled from
 localStorage), persist both, parse `owner`/`repo` from the URL (accepts
 `https://github.com/owner/repo[.git]` or bare `owner/repo`), and verify access
 with a single `GET /repos/{owner}/{repo}` so a bad token fails immediately and
 clearly.
 
 **Pull** — `pull()`
-1. Scan OPFS root → `Map<path, {bytes, sha}>`, skipping `.gitsync`. If there is
+1. Scan OPFS root → `Map<path, {bytes, sha}>`, applying `IGNORE_PATTERNS`. If there is
    no `index.json` and the scan is non-empty, stop and ask Replace or Adopt
    (see above) before going further.
 2. `GET /repos/{o}/{r}/git/ref/heads/{branch}` → commit sha;
@@ -248,7 +328,7 @@ CLAUDE.md          design principles and working constraints for this repo
 index.html         page shell, loads js/main.js as <script type="module">
 style.css          plain CSS, no framework
 js/config.js       API base URL, default branch, STORE_DIR = '.gitsync',
-                   MAX_SILENT_DELETES, MAX_SILENT_DELETE_RATIO
+                   IGNORE_PATTERNS, MAX_SILENT_DELETES, MAX_SILENT_DELETE_RATIO
 js/log.js          append lines to the log area (info / warn / error)
 js/settings.js     localStorage for repo URL + token; URL → {owner, repo}
 js/hash.js         gitBlobSha(bytes), chunked base64 encode/decode
@@ -257,6 +337,7 @@ js/github.js       getRepo, getRef, getTree, getBlob, createBlob, createTree,
 js/opfs.js         walkRoot, read, write, remove, pruneDirs, readIndex, writeIndex
 js/sync.js         scanLocal, classify, pull, push, resolveConflict
 js/main.js         DOM wiring and rendering
+tests.html         assertions over the pure functions, run in the browser
 ```
 
 `CLAUDE.md` holds the durable design principles — no build step, no runtime
@@ -301,22 +382,33 @@ call stack on files of any size.
 
 ## Verification
 
-Serve locally (`python3 -m http.server`, then `http://localhost:8000`) and,
-against a scratch repo:
+`tests.html` covers the pure functions — git blob hashing (against values from
+`git hash-object`), base64 round trips, the ignore patterns, the classification
+table and the status rows. Open it alongside the app; it needs no repo, token or
+network.
 
-1. Connect with a bad token → clear failure, no partial state.
-2. Connect, Pull → repo files appear at the OPFS root, nested paths intact.
+The checks below marked **[automated]** have also been run headless against real
+OPFS with a stateful stub of the GitHub API, which confirmed the pull/push round
+trip, the tree entry shapes and the guards. That stub is not GitHub, so none of
+it proves live API compatibility. Work the rest by hand: serve locally
+(`python3 -m http.server`, then `http://localhost:8000`) against a scratch repo.
+
+1. *Needs a real repo.* Connect with a bad token → clear failure, no partial state.
+2. **[automated]** Connect, Pull → repo files appear at the OPFS root, nested paths intact.
 3. Edit a file via the other app (or devtools), Push → commit lands on `main`.
-4. Change a file on GitHub, Pull → only that blob is fetched; change appears locally.
-5. Delete a file locally, Push → deleted in the repo.
-6. Add a binary file (a small PNG), Push, delete locally, Pull → byte-identical.
-7. Change the same file on both sides, Pull → conflict listed, push blocked;
-   *keep mine* then Push overwrites remote; *take theirs* restores the remote version.
-8. Push with no changes → "nothing to push", no commit.
+4. **[automated]** Change a file on GitHub, Pull → only that blob is fetched; a repeat pull fetches none.
+5. **[automated]** Delete a file locally, Push → sent as a null sha, deleted in the repo.
+6. **[automated]** for the OPFS byte round trip; *needs a real repo* for the GitHub leg.
+7. **[automated]** Change the same file on both sides, Pull → conflict listed,
+   local file untouched, push blocked; *take theirs* restores the remote version
+   and leaves nothing to push. *Keep mine* still needs a real repo.
+8. **[automated]** Push with no changes → "nothing to push", no commit. Declining
+   the preview also commits nothing and leaves the branch head where it was.
 9. Delete `.gitsync/index.json` only, Pull → clean re-clone, push stays disabled
    until it completes.
-10. Delete every file but leave `index.json`, Push → refused by guard 2, naming
-    the tracked count; Pull restores everything.
+10. **[automated]** Delete every file but leave `index.json`, Push → refused by
+    guard 2, naming the tracked count and the paths; the deliberate override then
+    goes through. Pull restores everything.
 11. Delete 6 of 10 files, Push → bulk confirmation listing all six; declining
     commits nothing.
 12. With unrelated files already in OPFS and no `index.json`, Pull → prompted;
@@ -326,3 +418,12 @@ against a scratch repo:
     pending additions, colliding files listed as conflicts.
 14. Edit two files, Reset workspace from repo → preview names both, confirming
     restores them and clears the pending changes.
+15. Trigger a Gypsum autosave mid-edit, Push → no `*-autosave.gypsum` or
+    `*-temp.gypsum` appears in the preview or the commit.
+16. Edit a note in Gypsum so `history.gypsum` changes, Push → the history file
+    is committed alongside the note.
+17. Robustness check, not an expected flow: run a Gypsum tar backup and
+    re-import (its overwrite path), then Pull → `.gitsync/` was wiped with
+    everything else, so it re-clones cleanly rather than proposing deletions.
+18. Connect → the persistent-storage result is logged, and a refusal leaves
+    every other operation working normally.

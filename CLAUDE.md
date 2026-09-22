@@ -44,9 +44,22 @@ app expects them. `.gitsync/` is the only thing this app owns.
 
 - Never write app state anywhere but `.gitsync/`.
 - Never assume a file at the root came from us — the other app writes there too.
-- Always skip `.gitsync/` when scanning.
-- The other app may clear all of OPFS at any time. The app must survive that;
-  see the safeguards below.
+- Skip `.gitsync/` when scanning, along with everything else in
+  `IGNORE_PATTERNS`.
+- The companion app is [gypsum](https://github.com/aewshopping/gypsum). It owns
+  `.gypsum/` at the root. That directory **is synced** — its history and layout
+  files are worth versioning — but this app only ever reads it. Do not write
+  into `.gypsum/`, `mtime.json` included.
+- Gypsum's transient save artifacts (`*-save`, `*-autosave`, `*-temp`
+  `.gypsum` files) are ignored by pattern; they exist only between a write and
+  its verification, and committing them churns history for nothing.
+- Gypsum's tar import/export is a **separate workflow**, not one that runs
+  alongside this app. In a git-synced setup, git is the backup mechanism — which
+  is why `.gypsum/` is worth versioning.
+- The workspace can vanish at any time, and not only because an app cleared it:
+  OPFS here is evictable under disk pressure. The app must survive that; see the
+  safeguards below. Do not assume anything in OPFS is still there because it was
+  there last time.
 
 ### 5. Bytes, not strings
 
@@ -93,19 +106,27 @@ this repo is public — it is served from GitHub Pages.
 
 ## Testing
 
-There is no test runner, because there is no npm. Verification is the manual
-checklist at the end of `plans/app setup.md`, run against a scratch repo over
-`http://localhost:8000`. Work through it before calling a change done, and add a
-case to it whenever you fix a bug.
+There is no test runner, because there is no npm.
 
-Do not add a test framework to solve this. If the checklist gets unwieldy, a
-plain `tests.html` that runs assertions in the browser and prints results is the
-in-budget answer.
+`tests.html` holds assertions over the pure functions — hashing, base64, the
+ignore patterns, `classify`, `statusList`. Open it over `http://localhost` and
+every check should pass. It needs no repo, token or network, so run it on every
+change, and add a case whenever you fix a bug in that layer.
+
+The git blob shas in it came from real `git hash-object` output. If one ever
+disagrees, the hashing is wrong and change detection is broken — fix the code,
+never the expected value.
+
+Everything else is the manual checklist at the end of `plans/app setup.md`, run
+against a scratch repo. Do not add a test framework.
 
 ## Environment notes
 
 - OPFS and `crypto.subtle` both require a secure context — `localhost` or https.
   Opening `index.html` as a `file://` URL will not work.
 - Two tabs of this app open at once is unsupported; OPFS writes would interleave.
+- Concurrent `getDirectoryHandle()` and `values()` on the same OPFS directory
+  deadlock in Chromium. Collect entry names first, then act on them — the
+  pattern gypsum's `clearOPFS()` uses.
 - Authenticated GitHub API limit is 5000 requests/hour. A first pull costs one
   request per file, so be deliberate about anything that multiplies request count.
