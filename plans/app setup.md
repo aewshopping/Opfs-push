@@ -29,6 +29,7 @@ returns to this app to push.
 | File content | Bytes end-to-end — text and binary both work |
 | Editing in this app | None — the other app is the editor; the file list is read-only |
 | Conflicts | Detected per file, block the push, resolved by an explicit choice |
+| Wipe protection | Push is previewed every time and blocked on suspicious deletion patterns |
 
 ## Why not `browser-git-ops`
 
@@ -106,6 +107,53 @@ Deletions fall out of this naturally, as the cases where `L` or `R` is `null`.
 Either way the file returns to a consistent state. Conflicts are file-level, not
 line-level; there is no text merge.
 
+## Safeguards against accidental mass deletion
+
+The editor app on this origin can clear all of OPFS. That interacts with the
+sync model in a way that is worth stating plainly, because it is the opposite of
+what intuition suggests:
+
+- **A complete wipe is safe.** If `.gitsync/index.json` goes too, the next pull
+  sees no local files and no merge base, so every remote path classifies as new
+  and the repo re-clones cleanly.
+- **A partial wipe is the dangerous one.** If `index.json` survives while the
+  files do not — a delete-all that skips dot-directories, or one that fails
+  partway — then every tracked path reads as `B` present, `L` absent, which is
+  precisely the signature of a deliberate local deletion. An unguarded push would
+  commit the deletion of the entire repo.
+
+Four guards, in order of severity:
+
+**1. No merge base, no push.** If `index.json` is missing, unparseable, or has no
+`head`, push is disabled outright and only pull is offered. Without a base sha
+per file the app cannot distinguish "deleted" from "never seen", so it must not
+guess. A missing index always means clone, never delete.
+
+**2. Empty-workspace block.** If the local scan finds zero files while the index
+tracks one or more, the push is refused with a message naming the tracked count
+and pointing at Pull as the fix. This is the wipe signature, and it is never
+what a user meant by "push my changes". Overriding it is possible but
+deliberate — a separate confirmation that names the count of files to be
+deleted, not a single click.
+
+**3. Bulk-deletion confirmation.** Any push whose deletions exceed either
+threshold in `config.js` — `MAX_SILENT_DELETES` (5 files) or
+`MAX_SILENT_DELETE_RATIO` (20% of tracked files) — lists every affected path and
+requires an explicit confirmation before the commit is built.
+
+**4. Every push is previewed.** Push is always two steps: a summary of what is
+about to be committed, broken down as new / modified / deleted with deletions
+called out, and then a confirm. There is no path that commits without the user
+having seen the file list first.
+
+The pull side warns too: if a pull finds the workspace empty while the index
+tracks files, it says so in the log before re-cloning, so the wipe is visible
+rather than silently repaired.
+
+None of this is a substitute for the underlying safety net — every state the app
+has ever pushed is recoverable from git history — but a mass-deletion commit is
+tedious to unpick, and these guards mean it cannot happen by accident.
+
 ## Behaviour
 
 **Connect** — read repo URL + token from the inputs (prefilled from
@@ -130,19 +178,25 @@ clearly.
 6. Re-render the file list and the conflict panel.
 
 **Push** — `push(message)`
+0. Refuse if there is no usable merge base (guard 1), or if the workspace is
+   empty while files are tracked (guard 2).
 1. Refuse if conflicts are outstanding, and say which files.
 2. `pull()` first, always — avoids committing against a stale head.
 3. If that pull produced conflicts, abort and surface them.
 4. Diff local against `index.files`: `created` (`L`, no `B`), `updated`
    (`L !== B`), `deleted` (`B`, no `L`). If all three are empty, log
    "nothing to push" and stop.
-5. `POST .../git/blobs` for each created/updated file (base64, pooled) → blob shas.
-6. `POST .../git/trees` with `base_tree: index.treeSha`, one entry per change;
+5. Show the preview (guard 4) — new / modified / deleted, deletions listed in
+   full — and wait for confirmation; if the deletion count trips guard 3, that
+   confirmation is the explicit one. Nothing below this line runs before the
+   user has confirmed.
+6. `POST .../git/blobs` for each created/updated file (base64, pooled) → blob shas.
+7. `POST .../git/trees` with `base_tree: index.treeSha`, one entry per change;
    deletions are sent as `{ path, mode, type: "blob", sha: null }`.
-7. `POST .../git/commits` with `parents: [index.head]`.
-8. `PATCH .../git/refs/heads/{branch}`. A 422 here means non-fast-forward —
+8. `POST .../git/commits` with `parents: [index.head]`.
+9. `PATCH .../git/refs/heads/{branch}`. A 422 here means non-fast-forward —
    report it and tell the user to pull.
-9. Update `index.json` from what was just pushed — the new commit sha, the new
+10. Update `index.json` from what was just pushed — the new commit sha, the new
    tree sha, and the blob shas already known from step 5. No refetch needed.
 
 Every network and OPFS call is wrapped; failures print to the log area instead
@@ -153,7 +207,8 @@ of throwing unhandled. Buttons disable while an operation is in flight.
 ```
 index.html         page shell, loads js/main.js as <script type="module">
 style.css          plain CSS, no framework
-js/config.js       API base URL, default branch, STORE_DIR = '.gitsync'
+js/config.js       API base URL, default branch, STORE_DIR = '.gitsync',
+                   MAX_SILENT_DELETES, MAX_SILENT_DELETE_RATIO
 js/log.js          append lines to the log area (info / warn / error)
 js/settings.js     localStorage for repo URL + token; URL → {owner, repo}
 js/hash.js         gitBlobSha(bytes), chunked base64 encode/decode
@@ -173,7 +228,9 @@ call stack on files of any size.
 - **Pull** button
 - File list: vertically scrollable, one line per file, path + status
   (`new` / `modified` / `deleted` / `conflict` / unchanged). Read-only.
-- Commit message input + **Push** button
+- Commit message input + **Push** button, which opens a preview (new / modified
+  / deleted, deletions listed) that must be confirmed before anything is committed
+- Tracked-file count shown next to the file list, so a wipe is visible at a glance
 - Conflict panel, hidden when empty: per file, *view remote*, *keep mine*,
   *take theirs*
 - `<pre>` log area for status and errors
@@ -209,3 +266,9 @@ against a scratch repo:
 7. Change the same file on both sides, Pull → conflict listed, push blocked;
    *keep mine* then Push overwrites remote; *take theirs* restores the remote version.
 8. Push with no changes → "nothing to push", no commit.
+9. Delete `.gitsync/index.json` only, Pull → clean re-clone, push stays disabled
+   until it completes.
+10. Delete every file but leave `index.json`, Push → refused by guard 2, naming
+    the tracked count; Pull restores everything.
+11. Delete 6 of 10 files, Push → bulk confirmation listing all six; declining
+    commits nothing.
