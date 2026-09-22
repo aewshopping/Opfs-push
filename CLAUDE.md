@@ -106,14 +106,19 @@ this repo is public — it is served from GitHub Pages.
 
 ## Testing
 
-There is no test runner, because there is no npm. Verification is the manual
-checklist at the end of `plans/app setup.md`, run against a scratch repo over
-`http://localhost:8000`. Work through it before calling a change done, and add a
-case to it whenever you fix a bug.
+There is no test runner, because there is no npm.
 
-Do not add a test framework to solve this. If the checklist gets unwieldy, a
-plain `tests.html` that runs assertions in the browser and prints results is the
-in-budget answer.
+`tests.html` holds assertions over the pure functions — hashing, base64, the
+ignore patterns, `classify`, `statusList`. Open it over `http://localhost` and
+every check should pass. It needs no repo, token or network, so run it on every
+change, and add a case whenever you fix a bug in that layer.
+
+The git blob shas in it came from real `git hash-object` output. If one ever
+disagrees, the hashing is wrong and change detection is broken — fix the code,
+never the expected value.
+
+Everything else is the manual checklist at the end of `plans/app setup.md`, run
+against a scratch repo. Do not add a test framework.
 
 ## Environment notes
 

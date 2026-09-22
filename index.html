@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OPFS ⇄ GitHub sync</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+    <h1>OPFS ⇄ GitHub sync</h1>
+    <p class="subtitle">Pulls a repo into this origin's OPFS and pushes the changes back.</p>
+</header>
+
+<main>
+
+<section class="panel">
+    <h2>Repository</h2>
+    <div class="field">
+        <label for="repo-url">Repository</label>
+        <input id="repo-url" type="text" placeholder="https://github.com/owner/repo" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field">
+        <label for="branch">Branch</label>
+        <input id="branch" type="text" placeholder="main" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field">
+        <label for="token">Token</label>
+        <input id="token" type="password" placeholder="fine-grained PAT, contents: read/write" autocomplete="off">
+    </div>
+    <div class="actions">
+        <button id="btn-connect" type="button" class="primary">Connect</button>
+        <span id="connection" class="status-text">not connected</span>
+    </div>
+</section>
+
+<section class="panel" id="workspace-panel">
+    <h2>
+        Workspace
+        <span id="tracked-count" class="badge">—</span>
+    </h2>
+    <div class="actions">
+        <button id="btn-pull" type="button" disabled>Pull</button>
+        <button id="btn-reset" type="button" class="danger" disabled>Reset workspace from repo</button>
+    </div>
+    <ul id="file-list" class="file-list" aria-live="polite">
+        <li class="empty">Connect and pull to see files.</li>
+    </ul>
+    <div class="field">
+        <label for="commit-message">Commit message</label>
+        <input id="commit-message" type="text" placeholder="Update notes" autocomplete="off">
+    </div>
+    <div class="actions">
+        <button id="btn-push" type="button" class="primary" disabled>Push</button>
+    </div>
+</section>
+
+<section class="panel" id="conflict-panel" hidden>
+    <h2>Conflicts</h2>
+    <p class="hint">Changed in both places. Pushing is blocked until each one is settled.</p>
+    <ul id="conflict-list" class="conflict-list"></ul>
+</section>
+
+<section class="panel">
+    <h2>Log</h2>
+    <div id="log" class="log" role="log" aria-live="polite"></div>
+</section>
+
+</main>
+
+<dialog id="confirm-dialog">
+    <form method="dialog">
+        <h3 id="confirm-title">Confirm</h3>
+        <div id="confirm-body" class="dialog-body"></div>
+        <label id="confirm-explicit" class="explicit" hidden>
+            Type <code>delete</code> to continue:
+            <input id="confirm-typed" type="text" autocomplete="off" spellcheck="false">
+        </label>
+        <menu>
+            <button value="cancel" type="submit">Cancel</button>
+            <button id="confirm-ok" value="ok" type="submit" class="primary">Continue</button>
+        </menu>
+    </form>
+</dialog>
+
+<dialog id="firstpull-dialog">
+    <form method="dialog">
+        <h3>This workspace already has files</h3>
+        <div id="firstpull-body" class="dialog-body"></div>
+        <menu class="stacked">
+            <button value="replace" type="submit" class="primary">Replace — make OPFS match the repo exactly</button>
+            <button value="adopt" type="submit">Adopt — keep them as pending additions</button>
+            <button value="cancel" type="submit">Cancel</button>
+        </menu>
+    </form>
+</dialog>
+
+<dialog id="view-dialog">
+    <form method="dialog">
+        <h3 id="view-title">Remote version</h3>
+        <pre id="view-body" class="dialog-body view-body"></pre>
+        <menu>
+            <button value="close" type="submit">Close</button>
+        </menu>
+    </form>
+</dialog>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

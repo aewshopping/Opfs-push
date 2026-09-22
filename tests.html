@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tests — OPFS ⇄ GitHub sync</title>
+<link rel="stylesheet" href="style.css">
+<style>
+    .result { font-family: var(--mono); font-size: .8rem; padding: .15rem 0; }
+    .pass::before { content: "ok   "; color: var(--accent); }
+    .fail { color: var(--danger); }
+    .fail::before { content: "FAIL "; font-weight: 700; }
+    .detail { color: var(--muted); padding-left: 2.5rem; white-space: pre-wrap; }
+    .group-heading { margin: 1rem 0 .3rem; font-weight: 600; font-size: .85rem; }
+    #summary { font-size: 1rem; font-weight: 600; margin-top: 1rem; }
+</style>
+</head>
+<body>
+<header>
+    <h1>Tests</h1>
+    <p class="subtitle">The pure functions, run in the browser. No framework, no build — open this file over
+    <code>http://localhost</code> alongside the app.</p>
+</header>
+<main>
+    <section class="panel">
+        <div id="results"></div>
+        <div id="summary">running…</div>
+    </section>
+</main>
+
+<script type="module">
+import { gitBlobSha, bytesToBase64, base64ToBytes } from './js/hash.js';
+import { isIgnored } from './js/config.js';
+import { classify, statusList } from './js/sync.js';
+
+const results = document.getElementById('results');
+let failures = 0;
+let total = 0;
+
+function group(name) {
+    const heading = document.createElement('div');
+    heading.className = 'group-heading';
+    heading.textContent = name;
+    results.append(heading);
+}
+
+function check(name, actual, expected) {
+    total++;
+    const ok = JSON.stringify(actual) === JSON.stringify(expected);
+    if (!ok) failures++;
+    const line = document.createElement('div');
+    line.className = `result ${ok ? 'pass' : 'fail'}`;
+    line.textContent = name;
+    results.append(line);
+    if (!ok) {
+        const detail = document.createElement('div');
+        detail.className = 'detail';
+        detail.textContent = `got      ${JSON.stringify(actual)}\nexpected ${JSON.stringify(expected)}`;
+        results.append(detail);
+    }
+}
+
+const encode = text => new TextEncoder().encode(text);
+
+// Expected values produced by `git hash-object` on the same inputs. If these ever
+// disagree, change detection is broken and every file will look modified.
+group('git blob hashing');
+check('empty file', await gitBlobSha(new Uint8Array(0)), 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391');
+check('text with newline', await gitBlobSha(encode('hello\n')), 'ce013625030ba8dba906f756967f9e9ca394464a');
+check('text without newline', await gitBlobSha(encode('abc')), 'f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f');
+check('utf-8 multibyte', await gitBlobSha(encode('café ☕\n')), 'df113425d6f29a3f8cfb2ca897bebf8703e56d20');
+check('binary bytes', await gitBlobSha(new Uint8Array([0, 1, 2, 250, 255])), '88f97d6cc3e909c236975283342adea256415672');
+
+group('base64');
+const large = new Uint8Array(300_000).map((_, index) => index % 256);
+check('large payload survives the round trip', base64ToBytes(bytesToBase64(large)).every((byte, index) => byte === large[index]), true);
+check('large payload keeps its length', base64ToBytes(bytesToBase64(large)).length, large.length);
+check('wrapped base64 decodes', [...base64ToBytes('aGVs\nbG8=')], [...encode('hello')]);
+check('empty input', [...base64ToBytes(bytesToBase64(new Uint8Array(0)))], []);
+
+group('ignore patterns');
+check('this app’s own state', isIgnored('.gitsync/index.json'), true);
+check('nested own state', isIgnored('.gitsync/a/b.json'), true);
+check('autosave at the root', isIgnored('note-autosave.gypsum'), true);
+check('autosave in .gypsum', isIgnored('.gypsum/note-autosave.gypsum'), true);
+check('temp file nested deeper', isIgnored('.gypsum/deep/x-temp.gypsum'), true);
+check('save artifact', isIgnored('.gypsum/x-save.gypsum'), true);
+check('history is kept', isIgnored('.gypsum/history.gypsum'), false);
+check('layouts are kept', isIgnored('.gypsum/table_layouts.gypsum'), false);
+check('mtime map is kept', isIgnored('.gypsum/mtime.json'), false);
+check('trash copies are kept', isIgnored('.gypsum/a-20260101-000000-trash.gypsum'), false);
+check('ordinary note is kept', isIgnored('notes/a.md'), false);
+check('lookalike name is kept', isIgnored('my-autosave.gypsum.md'), false);
+
+group('classify — the four cases');
+const local = new Map([
+    ['same.md', { sha: 'A' }], ['localonly.md', { sha: 'B' }], ['both.md', { sha: 'C' }],
+    ['added.md', { sha: 'D' }], ['remoteonly.md', { sha: 'Y' }],
+]);
+const base = {
+    'same.md': { sha: 'A' }, 'localonly.md': { sha: 'X' }, 'both.md': { sha: 'X' },
+    'remoteonly.md': { sha: 'Y' }, 'gonelocal.md': { sha: 'Z' },
+};
+const remote = new Map([
+    ['same.md', { sha: 'A' }], ['localonly.md', { sha: 'X' }], ['both.md', { sha: 'R' }],
+    ['remoteonly.md', { sha: 'Y2' }], ['gonelocal.md', { sha: 'Z' }],
+]);
+const plan = classify(local, base, remote);
+const paths = bucket => plan[bucket].map(entry => entry.path);
+check('unchanged on both sides', paths('inSync'), ['same.md']);
+check('changed on the remote only', paths('fromRemote'), ['remoteonly.md']);
+check('changed locally only', paths('fromLocal'), ['added.md', 'gonelocal.md', 'localonly.md']);
+check('changed on both sides', paths('conflicts'), ['both.md']);
+check('a local deletion carries no local sha', plan.fromLocal.find(entry => entry.path === 'gonelocal.md').local, null);
+check('a local deletion keeps its base', plan.fromLocal.find(entry => entry.path === 'gonelocal.md').base, 'Z');
+check('a creation has no base', plan.fromLocal.find(entry => entry.path === 'added.md').base, null);
+
+group('classify — deletions');
+check('a remote deletion is applied locally',
+    classify(new Map([['x.md', { sha: 'A' }]]), { 'x.md': { sha: 'A' } }, new Map())
+        .fromRemote.map(entry => [entry.path, entry.remote]), [['x.md', null]]);
+check('deleted on both sides needs no work',
+    classify(new Map(), { 'x.md': { sha: 'A' } }, new Map()).inSync.map(entry => entry.path), ['x.md']);
+check('deleted here, edited there, is a conflict',
+    classify(new Map(), { 'x.md': { sha: 'A' } }, new Map([['x.md', { sha: 'B' }]]))
+        .conflicts.map(entry => entry.path), ['x.md']);
+
+group('classify — first pull, no index');
+const firstPull = classify(
+    new Map([['keep.md', { sha: 'A' }], ['clash.md', { sha: 'B' }]]),
+    {},
+    new Map([['clash.md', { sha: 'C' }], ['new.md', { sha: 'D' }]]),
+);
+check('a leftover file becomes an addition', firstPull.fromLocal.map(entry => entry.path), ['keep.md']);
+check('a colliding file becomes a conflict', firstPull.conflicts.map(entry => entry.path), ['clash.md']);
+check('a repo file is applied', firstPull.fromRemote.map(entry => entry.path), ['new.md']);
+check('an identical leftover needs no work',
+    classify(new Map([['a.md', { sha: 'A' }]]), {}, new Map([['a.md', { sha: 'A' }]]))
+        .inSync.map(entry => entry.path), ['a.md']);
+
+group('statusList');
+const rows = statusList(
+    new Map([['new.md', { sha: 'N' }], ['mod.md', { sha: 'M2' }], ['same.md', { sha: 'S' }], ['clash.md', { sha: 'C' }]]),
+    { files: { 'mod.md': { sha: 'M' }, 'same.md': { sha: 'S' }, 'gone.md': { sha: 'G' }, 'clash.md': { sha: 'X' } } },
+    [{ path: 'clash.md' }],
+);
+const statusOf = path => rows.find(row => row.path === path)?.status;
+check('untracked file is new', statusOf('new.md'), 'new');
+check('changed file is modified', statusOf('mod.md'), 'modified');
+check('missing file is deleted', statusOf('gone.md'), 'deleted');
+check('matching file is unchanged', statusOf('same.md'), 'unchanged');
+check('conflict outranks modified', statusOf('clash.md'), 'conflict');
+check('rows are sorted by path', rows.map(row => row.path), ['clash.md', 'gone.md', 'mod.md', 'new.md', 'same.md']);
+
+const summary = document.getElementById('summary');
+summary.textContent = failures === 0 ? `All ${total} checks passed.` : `${failures} of ${total} checks FAILED.`;
+summary.className = failures === 0 ? '' : 'fail';
+// Read by any automation driving this page.
+window.testResults = { total, failures };
+</script>
+</body>
+</html>

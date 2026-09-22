@@ -1,6 +1,7 @@
 # App setup — GitHub ⇄ OPFS sync app
 
-Status: **agreed plan, not yet implemented.**
+Status: **implemented.** The automated checks below pass; the items marked
+*needs a real repo* have not been run against live GitHub yet.
 
 ## Goal
 
@@ -336,6 +337,7 @@ js/github.js       getRepo, getRef, getTree, getBlob, createBlob, createTree,
 js/opfs.js         walkRoot, read, write, remove, pruneDirs, readIndex, writeIndex
 js/sync.js         scanLocal, classify, pull, push, resolveConflict
 js/main.js         DOM wiring and rendering
+tests.html         assertions over the pure functions, run in the browser
 ```
 
 `CLAUDE.md` holds the durable design principles — no build step, no runtime
@@ -380,22 +382,33 @@ call stack on files of any size.
 
 ## Verification
 
-Serve locally (`python3 -m http.server`, then `http://localhost:8000`) and,
-against a scratch repo:
+`tests.html` covers the pure functions — git blob hashing (against values from
+`git hash-object`), base64 round trips, the ignore patterns, the classification
+table and the status rows. Open it alongside the app; it needs no repo, token or
+network.
 
-1. Connect with a bad token → clear failure, no partial state.
-2. Connect, Pull → repo files appear at the OPFS root, nested paths intact.
+The checks below marked **[automated]** have also been run headless against real
+OPFS with a stateful stub of the GitHub API, which confirmed the pull/push round
+trip, the tree entry shapes and the guards. That stub is not GitHub, so none of
+it proves live API compatibility. Work the rest by hand: serve locally
+(`python3 -m http.server`, then `http://localhost:8000`) against a scratch repo.
+
+1. *Needs a real repo.* Connect with a bad token → clear failure, no partial state.
+2. **[automated]** Connect, Pull → repo files appear at the OPFS root, nested paths intact.
 3. Edit a file via the other app (or devtools), Push → commit lands on `main`.
-4. Change a file on GitHub, Pull → only that blob is fetched; change appears locally.
-5. Delete a file locally, Push → deleted in the repo.
-6. Add a binary file (a small PNG), Push, delete locally, Pull → byte-identical.
-7. Change the same file on both sides, Pull → conflict listed, push blocked;
-   *keep mine* then Push overwrites remote; *take theirs* restores the remote version.
-8. Push with no changes → "nothing to push", no commit.
+4. **[automated]** Change a file on GitHub, Pull → only that blob is fetched; a repeat pull fetches none.
+5. **[automated]** Delete a file locally, Push → sent as a null sha, deleted in the repo.
+6. **[automated]** for the OPFS byte round trip; *needs a real repo* for the GitHub leg.
+7. **[automated]** Change the same file on both sides, Pull → conflict listed,
+   local file untouched, push blocked; *take theirs* restores the remote version
+   and leaves nothing to push. *Keep mine* still needs a real repo.
+8. **[automated]** Push with no changes → "nothing to push", no commit. Declining
+   the preview also commits nothing and leaves the branch head where it was.
 9. Delete `.gitsync/index.json` only, Pull → clean re-clone, push stays disabled
    until it completes.
-10. Delete every file but leave `index.json`, Push → refused by guard 2, naming
-    the tracked count; Pull restores everything.
+10. **[automated]** Delete every file but leave `index.json`, Push → refused by
+    guard 2, naming the tracked count and the paths; the deliberate override then
+    goes through. Pull restores everything.
 11. Delete 6 of 10 files, Push → bulk confirmation listing all six; declining
     commits nothing.
 12. With unrelated files already in OPFS and no `index.json`, Pull → prompted;
