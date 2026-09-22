@@ -53,9 +53,13 @@ app expects them. `.gitsync/` is the only thing this app owns.
 - Gypsum's transient save artifacts (`*-save`, `*-autosave`, `*-temp`
   `.gypsum` files) are ignored by pattern; they exist only between a write and
   its verification, and committing them churns history for nothing.
-- The other app may clear all of OPFS at any time — its `clearOPFS()` removes
-  every root entry recursively, `.gitsync/` included. The app must survive that;
-  see the safeguards below.
+- Gypsum's tar import/export is a **separate workflow**, not one that runs
+  alongside this app. In a git-synced setup, git is the backup mechanism — which
+  is why `.gypsum/` is worth versioning.
+- The workspace can vanish at any time, and not only because an app cleared it:
+  OPFS here is evictable under disk pressure. The app must survive that; see the
+  safeguards below. Do not assume anything in OPFS is still there because it was
+  there last time.
 
 ### 5. Bytes, not strings
 

@@ -128,15 +128,24 @@ its source, the facts that constrain this design:
 - **Only `.txt` and `.md` are visible to Gypsum.** Its loader and its tar backup
   both collect those two extensions plus everything under `.gypsum/`, and both
   skip dot-directories otherwise.
+- **Its tar import/export is a separate workflow from this app**, not a
+  complementary one: both are routes for getting files into OPFS, and a given
+  setup uses one or the other. In a git-synced setup **git is the backup
+  mechanism**, which is why `.gypsum/` is synced — the edit history and table
+  layouts have no other route off the machine.
+- **OPFS here is evictable.** Gypsum never calls `navigator.storage.persist()`,
+  and notes in its own source that the browser may clear the storage under disk
+  pressure. Nothing in either app has to misbehave for the workspace to vanish.
+  This, rather than any app action, is the primary justification for guards 1
+  and 2.
 - **`clearOPFS()` removes every root entry recursively, dot-directories
-  included.** A Gypsum tar import that hits its overwrite path therefore deletes
-  `.gitsync/` too. That is the safe outcome: guard 1 sees no merge base and
-  re-clones.
+  included**, so a tar import that hits its overwrite path deletes `.gitsync/`
+  too. That is the safe outcome: guard 1 sees no merge base and re-clones.
 - **`hasOPFSContent()` ignores dot-directories and counts only `.txt`/`.md`
-  files.** An OPFS holding just `.gitsync/` and non-note files imports with *no*
-  overwrite warning and *no* `clearOPFS()`, leaving `index.json` intact while the
-  file set changes beneath it. This is the partial-wipe case guard 2 exists for —
-  confirmed reachable, not hypothetical.
+  files**, so an OPFS holding just `.gitsync/` and non-note files imports with
+  *no* overwrite warning and *no* `clearOPFS()`, leaving `index.json` intact
+  while the file set changes beneath it. Not an expected workflow, but it is the
+  shape guard 2 catches, and eviction can produce the same shape unaided.
 - Gypsum notes that concurrent `getDirectoryHandle()` and `values()` on the same
   OPFS directory **deadlock in Chromium**. Collect entry names first, then act.
 
@@ -156,14 +165,23 @@ half-written recovery file and then commit its deletion moments later, churning
 the history for no gain. `history.gypsum`, `table_layouts.gypsum`, `mtime.json`
 and `*-trash.gypsum` are durable and do sync.
 
-### Known interaction
+### Requesting persistent storage
 
-Gypsum's tar backup carries only `.txt`/`.md` and `.gypsum/`. If the repo holds
-anything else — a `LICENSE`, a `.github/` folder, images — a Gypsum backup and
-re-import removes it from OPFS, and this app will then read that as a deletion
-and offer to push it. The push preview shows exactly this, and declining costs
-nothing: a pull restores the files, because the deletion was never committed.
-Keeping the repo to notes and `.gypsum/` state avoids the situation entirely.
+On connect, the app calls `navigator.storage.persist()` once. The two apps share
+one origin and therefore one storage bucket, so a granted request protects
+Gypsum's notes as much as this app's sync state. Browsers differ on how they
+answer — Chromium decides silently on engagement heuristics, Firefox may prompt —
+so the result is logged and never blocks anything. A refusal changes nothing
+about how the app behaves; the guards already assume the workspace can vanish.
+
+### If the two import paths do meet
+
+Not an expected combination, but worth knowing the failure is benign. Gypsum's
+tar backup carries only `.txt`/`.md` and `.gypsum/`, so if the repo holds
+anything else — a `LICENSE`, a `.github/` folder, images — a backup and
+re-import removes it from OPFS, and this app reads that as a deletion and offers
+to push it. The push preview shows exactly that, and declining costs nothing: a
+pull restores the files, because the deletion was never committed.
 
 Because `history.gypsum` is mutated by every edit, syncing from two machines will
 conflict on it routinely. Single-machine use has no such problem.
@@ -253,7 +271,8 @@ tedious to unpick, and these guards mean it cannot happen by accident.
 
 ## Behaviour
 
-**Connect** — read repo URL + token from the inputs (prefilled from
+**Connect** — request persistent storage (once, non-blocking), then read repo
+URL + token from the inputs (prefilled from
 localStorage), persist both, parse `owner`/`repo` from the URL (accepts
 `https://github.com/owner/repo[.git]` or bare `owner/repo`), and verify access
 with a single `GET /repos/{owner}/{repo}` so a bad token fails immediately and
@@ -390,6 +409,8 @@ against a scratch repo:
     `*-temp.gypsum` appears in the preview or the commit.
 16. Edit a note in Gypsum so `history.gypsum` changes, Push → the history file
     is committed alongside the note.
-17. Run a Gypsum tar backup and re-import (its overwrite path), then Pull →
-    `.gitsync/` was wiped with everything else, so it re-clones cleanly rather
-    than proposing deletions.
+17. Robustness check, not an expected flow: run a Gypsum tar backup and
+    re-import (its overwrite path), then Pull → `.gitsync/` was wiped with
+    everything else, so it re-clones cleanly rather than proposing deletions.
+18. Connect → the persistent-storage result is logged, and a refusal leaves
+    every other operation working normally.
