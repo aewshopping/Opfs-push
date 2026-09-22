@@ -44,8 +44,17 @@ app expects them. `.gitsync/` is the only thing this app owns.
 
 - Never write app state anywhere but `.gitsync/`.
 - Never assume a file at the root came from us — the other app writes there too.
-- Always skip `.gitsync/` when scanning.
-- The other app may clear all of OPFS at any time. The app must survive that;
+- Skip `.gitsync/` when scanning, along with everything else in
+  `IGNORE_PATTERNS`.
+- The companion app is [gypsum](https://github.com/aewshopping/gypsum). It owns
+  `.gypsum/` at the root. That directory **is synced** — its history and layout
+  files are worth versioning — but this app only ever reads it. Do not write
+  into `.gypsum/`, `mtime.json` included.
+- Gypsum's transient save artifacts (`*-save`, `*-autosave`, `*-temp`
+  `.gypsum` files) are ignored by pattern; they exist only between a write and
+  its verification, and committing them churns history for nothing.
+- The other app may clear all of OPFS at any time — its `clearOPFS()` removes
+  every root entry recursively, `.gitsync/` included. The app must survive that;
   see the safeguards below.
 
 ### 5. Bytes, not strings
@@ -107,5 +116,8 @@ in-budget answer.
 - OPFS and `crypto.subtle` both require a secure context — `localhost` or https.
   Opening `index.html` as a `file://` URL will not work.
 - Two tabs of this app open at once is unsupported; OPFS writes would interleave.
+- Concurrent `getDirectoryHandle()` and `values()` on the same OPFS directory
+  deadlock in Chromium. Collect entry names first, then act on them — the
+  pattern gypsum's `clearOPFS()` uses.
 - Authenticated GitHub API limit is 5000 requests/hour. A first pull costs one
   request per file, so be deliberate about anything that multiplies request count.
