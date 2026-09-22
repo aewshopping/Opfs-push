@@ -30,6 +30,7 @@ returns to this app to push.
 | Editing in this app | None — the other app is the editor; the file list is read-only |
 | Conflicts | Detected per file, block the push, resolved by an explicit choice |
 | Wipe protection | Push is previewed every time and blocked on suspicious deletion patterns |
+| First pull into a non-empty workspace | Prompt once: *Replace* (recommended) or *Adopt* |
 
 ## Why not `browser-git-ops`
 
@@ -107,6 +108,42 @@ Deletions fall out of this naturally, as the cases where `L` or `R` is `null`.
 Either way the file returns to a consistent state. Conflicts are file-level, not
 line-level; there is no text merge.
 
+## First pull into a non-empty workspace
+
+On a first pull there is no `index.json`, so the base sha is `null` for every
+path. Run that through the table above and pre-existing OPFS files — whatever the
+editor app left there — classify badly:
+
+- A local file **not** in the repo hits `R === B` (both null) and reads as a
+  local-only change, so the first push would commit the editor's leftovers into
+  the repo.
+- A local file that collides with a repo path but differs matches nothing and
+  becomes a conflict, one per file.
+
+Neither is wanted. The app therefore treats "no `index.json` and a non-empty
+workspace" as a distinct case and asks once, naming the file counts:
+
+- **Replace** (recommended) — make the OPFS root exactly match the repo. Files
+  not in the repo are deleted, files that differ are overwritten, and files that
+  are already byte-identical are left untouched (no needless download or write).
+  The end state is a clean mirror and a correct `index.json`.
+- **Adopt** — keep what is there. Repo files are written, local files not in the
+  repo become pending additions, and differing files become conflicts. For the
+  case where the existing OPFS files are work you actually want in the repo.
+
+An empty workspace skips the prompt entirely and just clones, which is the
+common case.
+
+This question arises exactly once per setup. Afterwards `index.json` exists and
+the ordinary three-way model covers everything.
+
+The same *Replace* operation is also exposed permanently as **Reset workspace
+from repo**, for discarding all local changes and returning to a known state.
+It is destructive in the local direction, so it previews what it would delete
+and overwrite and requires confirmation. Note that this is a different guard
+from the push safeguards below: those protect the repo from bad local state,
+this protects local state from a careless reset.
+
 ## Safeguards against accidental mass deletion
 
 The editor app on this origin can clear all of OPFS. That interacts with the
@@ -163,7 +200,9 @@ with a single `GET /repos/{owner}/{repo}` so a bad token fails immediately and
 clearly.
 
 **Pull** — `pull()`
-1. Scan OPFS root → `Map<path, {bytes, sha}>`, skipping `.gitsync`.
+1. Scan OPFS root → `Map<path, {bytes, sha}>`, skipping `.gitsync`. If there is
+   no `index.json` and the scan is non-empty, stop and ask Replace or Adopt
+   (see above) before going further.
 2. `GET /repos/{o}/{r}/git/ref/heads/{branch}` → commit sha;
    `GET .../git/trees/{sha}?recursive=1` → remote entries.
    If the response has `truncated: true`, abort with a clear message — the repo
@@ -232,7 +271,8 @@ call stack on files of any size.
 ## UI (single page)
 
 - Repo URL input, token input (`type="password"`), **Connect** button
-- **Pull** button
+- **Pull** button, and a **Reset workspace from repo** action (previewed and
+  confirmed) for discarding all local changes
 - File list: vertically scrollable, one line per file, path + status
   (`new` / `modified` / `deleted` / `conflict` / unchanged). Read-only.
 - Commit message input + **Push** button, which opens a preview (new / modified
@@ -279,3 +319,10 @@ against a scratch repo:
     the tracked count; Pull restores everything.
 11. Delete 6 of 10 files, Push → bulk confirmation listing all six; declining
     commits nothing.
+12. With unrelated files already in OPFS and no `index.json`, Pull → prompted;
+    *Replace* leaves the root exactly matching the repo and those files gone;
+    identical files are not re-downloaded.
+13. Same setup, *Adopt* → repo files written, the unrelated files listed as
+    pending additions, colliding files listed as conflicts.
+14. Edit two files, Reset workspace from repo → preview names both, confirming
+    restores them and clears the pending changes.
