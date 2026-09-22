@@ -205,6 +205,7 @@ of throwing unhandled. Buttons disable while an operation is in flight.
 ## Files
 
 ```
+CLAUDE.md          design principles and working constraints for this repo
 index.html         page shell, loads js/main.js as <script type="module">
 style.css          plain CSS, no framework
 js/config.js       API base URL, default branch, STORE_DIR = '.gitsync',
@@ -218,6 +219,12 @@ js/opfs.js         walkRoot, read, write, remove, pruneDirs, readIndex, writeInd
 js/sync.js         scanLocal, classify, pull, push, resolveConflict
 js/main.js         DOM wiring and rendering
 ```
+
+`CLAUDE.md` holds the durable design principles — no build step, no runtime
+dependencies, bytes not strings, git-compatible hashing, the `.gitsync/`
+ownership boundary, and the rule that the deletion guards may be retuned but not
+removed. It references this plan rather than duplicating it, so the two do not
+drift.
 
 Base64 encoding is chunked — `btoa(String.fromCharCode(...bytes))` overflows the
 call stack on files of any size.
